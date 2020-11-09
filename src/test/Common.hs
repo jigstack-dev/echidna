@@ -37,7 +37,7 @@ import Echidna.Config (EConfig, _econfig, parseConfig, defaultConfig, sConf, cCo
 import Echidna.Solidity (loadSolTests, quiet)
 import Echidna.Test (checkETest)
 import Echidna.Types.Campaign (Campaign, TestState(..), testLimit, shrinkLimit, tests, gasInfo, corpus, coverage)
-import Echidna.Types.Signature (SolCall)
+import Echidna.Types.Signature (ContractName, SolCall)
 import Echidna.Types.Tx (Tx(..), TxCall(..), call)
 import Echidna.Types.World (eventMap)
 
@@ -46,7 +46,7 @@ testConfig = defaultConfig & sConf . quiet .~ True
                            & cConf . testLimit .~ 10000
                            & cConf . shrinkLimit .~ 4000
 
-runContract :: FilePath -> Maybe String -> EConfig -> IO Campaign
+runContract :: FilePath -> Maybe ContractName -> EConfig -> IO Campaign
 runContract f c cfg =
   flip runReaderT cfg $ do
     g <- getRandom
@@ -57,7 +57,7 @@ runContract f c cfg =
 testContract :: FilePath -> Maybe FilePath -> [(String, Campaign -> Bool)] -> TestTree
 testContract fp cfg = testContract' fp Nothing cfg True
 
-testContract' :: FilePath -> Maybe String -> Maybe FilePath -> Bool -> [(String, Campaign -> Bool)] -> TestTree
+testContract' :: FilePath -> Maybe ContractName -> Maybe FilePath -> Bool -> [(String, Campaign -> Bool)] -> TestTree
 testContract' fp n cfg s as = testCase fp $ do
   c <- set (sConf . quiet) True <$> maybe (pure testConfig) (fmap _econfig . parseConfig) cfg
   let c' = c & sConf . quiet .~ True
