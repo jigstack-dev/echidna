@@ -26,7 +26,7 @@ import System.IO                  (openFile, IOMode(..))
 import System.Exit                (ExitCode(..))
 import System.Directory           (findExecutable)
 
-import Echidna.ABI                (encodeSig, hashSig, fallback, commonTypeSizes, mkValidAbiInt, mkValidAbiUInt)
+import Echidna.ABI                (encodeSig, encodeSigWithName, hashSig, fallback, commonTypeSizes, mkValidAbiInt, mkValidAbiUInt)
 import Echidna.Exec               (execTx, initialVM)
 import Echidna.Events             (EventMap)
 import Echidna.RPC                (loadEthenoBatch)
@@ -92,6 +92,7 @@ data SolConf = SolConf { _contractAddr    :: Addr             -- ^ Contract addr
                        , _sender          :: NE.NonEmpty Addr -- ^ Sender addresses to use
                        , _balanceAddr     :: Integer          -- ^ Initial balance of deployer and senders
                        , _balanceContract :: Integer          -- ^ Initial balance of contract to test
+                       , _codeSize        :: Integer          -- ^ Max code size for deployed contratcs (default 24576, per EIP-170)
                        , _prefix          :: Text             -- ^ Function name prefix used to denote tests
                        , _cryticArgs      :: [String]         -- ^ Args to pass to crytic
                        , _solcArgs        :: String           -- ^ Args to pass to @solc@
@@ -164,14 +165,14 @@ linkLibraries [] = ""
 linkLibraries ls = "--libraries " ++
   iconcatMap (\i x -> concat [x, ":", show $ addrLibrary + toEnum i, ","]) ls
 
-filterMethods :: MonadThrow m => Filter -> NE.NonEmpty SolSignature -> m (NE.NonEmpty SolSignature)
-filterMethods f@(Whitelist [])  _ = throwM $ InvalidMethodFilters f
-filterMethods f@(Whitelist ic) ms = case NE.filter (\(m, _) -> m `elem` ic) ms of
-                                         [] -> throwM $ InvalidMethodFilters f
-                                         fs -> return $ NE.fromList fs
-filterMethods f@(Blacklist ig) ms = case NE.filter (\(m, _) -> m `notElem` ig) ms of
-                                         [] -> throwM $ InvalidMethodFilters f
-                                         fs -> return $ NE.fromList fs
+filterMethods :: Text -> Filter -> NE.NonEmpty SolSignature -> NE.NonEmpty SolSignature
+filterMethods _  f@(Whitelist [])  _ = error $ show $ InvalidMethodFilters f
+filterMethods cn f@(Whitelist ic) ms = case NE.filter (\s -> encodeSigWithName cn s `elem` ic) ms of
+                                         [] -> error $ show $ InvalidMethodFilters f
+                                         fs -> NE.fromList fs
+filterMethods cn f@(Blacklist ig) ms = case NE.filter (\s -> encodeSigWithName cn s `notElem` ig) ms of
+                                         [] -> error $ show $ InvalidMethodFilters f
+                                         fs -> NE.fromList fs
 
 abiOf :: Text -> SolcContract -> NE.NonEmpty SolSignature
 abiOf pref cc = fallback NE.:| filter (not . isPrefixOf pref . fst) (elems (cc ^. abiMap) <&> \m -> (m ^. methodName, m ^.. methodInputs . traverse . _2))
@@ -193,7 +194,7 @@ loadSpecified name cs = do
     unless q . putStrLn $ "Analyzing contract: " <> c ^. contractName . unpacked
 
   -- Local variables
-  SolConf ca d ads bala balc pref _ _ libs _ fp ma ch bm fs <- view hasLens
+  SolConf ca d ads bala balc mcs pref _ _ libs _ fp ma ch bm fs <- view hasLens
 
   -- generate the complete abi mapping
   let bc = c ^. creationCode
@@ -203,16 +204,17 @@ loadSpecified name cs = do
 
 
   -- Filter ABI according to the config options
-  fabiOfc <- filterMethods fs $ abiOf pref c
+  let fabiOfc = filterMethods (c ^. contractName) fs $ abiOf pref c
   -- Filter again for assertions checking if enabled
-  neFuns <- filterMethods fs (fallback NE.:| funs)
+  let neFuns = filterMethods (c ^. contractName) fs (fallback NE.:| funs)
+  
   -- Construct ABI mapping for World
-  let abiMapping = if ma then M.fromList $ cs <&> \cc -> (cc ^. runtimeCode . to stripBytecodeMetadata, abiOf pref cc)
+  let abiMapping = if ma then M.fromList $ cs <&> \cc -> (cc ^. runtimeCode . to stripBytecodeMetadata, filterMethods (cc ^. contractName) fs $ abiOf pref cc)
                          else M.singleton (c ^. runtimeCode . to stripBytecodeMetadata) fabiOfc
 
   -- Set up initial VM, either with chosen contract or Etheno initialization file
   -- need to use snd to add to ABI dict
-  blank' <- maybe (pure initialVM)
+  blank' <- maybe (pure (initialVM & block . maxCodeSize .~ w256 (fromInteger mcs)))
                   (loadEthenoBatch $ fst <$> tests)
                   fp
   let blank = populateAddresses (NE.toList ads |> d) bala blank'
